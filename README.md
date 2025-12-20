@@ -1,2 +1,2 @@
-# openaxflo-api
-OpenAxFlo - Python Django API
+# openaxflo-bo
+OpenAxFlo - Python Django Back Office
