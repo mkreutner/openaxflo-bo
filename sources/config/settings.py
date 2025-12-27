@@ -9,7 +9,7 @@ https://docs.djangoproject.com/en/5.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
-
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'inventory.apps.InventoryConfig',
     'procurement.apps.ProcurementConfig',
     'sales.apps.SalesConfig',
+    'company.apps.CompanyConfig',
 ]
 
 MIDDLEWARE = [
@@ -58,13 +59,14 @@ ROOT_URLCONF = 'config.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [os.path.join(BASE_DIR, 'templates')],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'sales.context_processors.dashboard_stats', # Ton processeur de stats
             ],
         },
     },
@@ -151,15 +153,20 @@ JAZZMIN_SETTINGS = {
     "order_with_respect_to": ["inventory", "procurement", "sales", "auth"],
 
     "icons": {
-        "auth.user": "fas fa-user",
+        "auth.user": "fas fa-user-cog",
         "inventory.product": "fas fa-camera",
         "inventory.category": "fas fa-stream",
         "inventory.brand": "fas fa-copyright",
         "procurement.supplier": "fas fa-truck",
         "procurement.purchaseprice": "fas fa-tags",
-        "sales.customer": "fas fa-users",
-        "sales.order": "fas fa-shopping-cart",
+        "sales.customer": "fas fa-users-tie",
+        "sales.order": "fas fa-file-invoice-dollar",
+        "sales.promotion": "fas fa-percentage",
+        "sales.creditnote": "fas fa-hand-holding-usd",
     },
+
+    "show_ui_builder": True, # Permet de tester les couleurs en direct
+    "changeform_format": "horizontal_tabs", # Très utile pour les longs formulaires Order
 }
 
 # Optionnel : changer la couleur pour être sûr de voir le changement

@@ -1,13 +1,9 @@
 from django.db import models
-from django.core.validators import MinValueValidator
 from decimal import Decimal
 from django.utils.translation import gettext_lazy as _
 
-# Inventory models.
 class Category(models.Model):
     name = models.CharField(_("Name"), max_length=100)
-    # 'self' permet de lier une catégorie à une autre catégorie
-    # null=True permet d'avoir des catégories racines (niveau 1)
     parent = models.ForeignKey(
         'self', 
         on_delete=models.CASCADE, 
@@ -21,7 +17,6 @@ class Category(models.Model):
         verbose_name_plural = "Categories"
 
     def __str__(self):
-        # Affiche le chemin complet : "Électronique > Téléphones > Smartphones"
         full_path = [self.name]
         k = self.parent
         while k is not None:
@@ -31,7 +26,7 @@ class Category(models.Model):
 
 class Brand(models.Model):
     name = models.CharField(max_length=100)
-
+    
     def __str__(self):
         return self.name
 
@@ -39,10 +34,18 @@ class Product(models.Model):
     name = models.CharField(max_length=200)
     category = models.ForeignKey(Category, on_delete=models.CASCADE)
     brand = models.ForeignKey(Brand, on_delete=models.SET_NULL, null=True)
-    retail_price = models.DecimalField(max_digits=10, decimal_places=2)
+    
+    # --- Liaison avec l'application Company ---
+    tax_rate = models.ForeignKey(
+        'company.TaxRate', 
+        on_delete=models.PROTECT, 
+        verbose_name="Taux de taxe applicable",
+        help_text="Sélectionnez le taux de TVA pour ce produit"
+    )
+    
+    retail_price = models.DecimalField("Prix HT", max_digits=10, decimal_places=2)
     retail_price_incl_tax = models.DecimalField("Prix TTC", max_digits=10, decimal_places=2, default=0.00)
-    vat_rate = models.DecimalField("Taux TVA (%)", max_digits=5, decimal_places=2, default=20.00)
-    # On peut ajouter un coefficient de marge par défaut par produit
+    
     margin_coefficient = models.DecimalField("Coeff. Marge", max_digits=4, decimal_places=2, default=1.50)
     stock_quantity = models.PositiveIntegerField("Stock disponible", default=0)
     low_stock_threshold = models.PositiveIntegerField("Seuil d'alerte", default=5)
@@ -54,25 +57,35 @@ class Product(models.Model):
     @property
     def needs_reorder(self):
         return self.stock_quantity <= self.low_stock_threshold
-
-    @property
-    def retail_price_excl_tax(self):
-        """Calcule le prix HT à la volée pour l'affichage"""
-        return (self.retail_price_incl_tax / (1 + self.vat_rate / 100)).quantize(Decimal('0.01'))
     
     def save(self, *args, **kwargs):
-        # Si le prix de vente est à 0, on essaie de le calculer
-        if self.retail_price_incl_tax == Decimal('0.00'):
-            # On cherche le prix d'achat (lié via related_name='purchase_prices' dans procurement)
-            # .first() récupère le premier prix d'achat enregistré
-            purchase_entry = self.purchase_prices.first()
-            
-            if purchase_entry:
-                purchase_price_ht = purchase_entry.price
-                # Calcul : Prix d'achat HT * Marge * TVA
-                calculated_price = purchase_price_ht * self.margin_coefficient * (1 + self.vat_rate / 100)
-                self.retail_price_incl_tax = calculated_price.quantize(Decimal('0.01'))
+        # On définit le multiplicateur de taxe dès le début (toujours dispo via FK tax_rate)
+        tax_multiplier = 1 + (self.tax_rate.rate / 100)
+
+        # 1. LOGIQUE DE CALCUL VIA MARGE (Seulement si l'objet existe déjà en base)
+        if self.pk and self.retail_price_incl_tax == Decimal('0.00'):
+            # Utilisation de getattr pour la sécurité de la relation inversée
+            purchase_prices = getattr(self, 'purchase_prices', None)
+            if purchase_prices and purchase_prices.exists():
+                purchase_price_ht = purchase_prices.first().price
+                # Calcul : HT Achat * Marge * TVA
+                calculated_ttc = purchase_price_ht * self.margin_coefficient * tax_multiplier
+                self.retail_price_incl_tax = calculated_ttc.quantize(Decimal('0.01'))
+
+        # 2. SYNCHRONISATION HT / TTC
+        # Cas A : On a le TTC mais pas le HT
+        if self.retail_price_incl_tax and not self.retail_price:
+            self.retail_price = (self.retail_price_incl_tax / tax_multiplier).quantize(Decimal('0.01'))
         
+        # Cas B : On a le HT mais pas encore le TTC (ou TTC à zéro)
+        elif self.retail_price and (not self.retail_price_incl_tax or self.retail_price_incl_tax == Decimal('0.00')):
+            self.retail_price_incl_tax = (self.retail_price * tax_multiplier).quantize(Decimal('0.01'))
+            
+        # Cas C : RE-CALCUL DE SÉCURITÉ (Les deux sont là, on synchronise sur le HT)
+        # Indispensable si on change la TVA ou le HT manuellement
+        elif self.retail_price and self.retail_price_incl_tax:
+            self.retail_price_incl_tax = (self.retail_price * tax_multiplier).quantize(Decimal('0.01'))
+
         super().save(*args, **kwargs)
 
     def __str__(self):

@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.urls import reverse
+from django.utils.html import format_html
 from .models import Customer, Address, Carrier, Order, OrderLine, Promotion
 
 class AddressInline(admin.TabularInline):
@@ -16,7 +18,17 @@ class CustomerAdmin(admin.ModelAdmin):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ('reference', 'customer', 'status', 'carrier', 'shipping_cost', 'get_total')
+    list_display = (
+        'id', 
+        'reference', 
+        'customer', 
+        'status', 
+        'carrier', 
+        'shipping_cost', 
+        'get_total', 
+        'view_invoice_link'
+    )
+    readonly_fields = ('reference',)
     
     fieldsets = (
         ('General Info', {'fields': ('reference', 'customer', 'status')}),
@@ -66,6 +78,12 @@ class OrderAdmin(admin.ModelAdmin):
             messages.SUCCESS
         )
 
+    def view_invoice_link(self, obj):
+        url = reverse('generate_invoice_pdf', args=[obj.id])
+        return format_html('<a class="button" href="{}" target="_blank">📄 PDF</a>', url)
+    
+    view_invoice_link.short_description = "Facture"
+
 admin.site.register(Carrier)
 
 @admin.register(Promotion)
@@ -81,9 +99,9 @@ class PromotionAdmin(admin.ModelAdmin):
     )
     
     fieldsets = (
-        ('Info Générale', {'fields': ('name', 'promo_type', 'code', 'active')}),
-        ('Valeur', {'fields': ('discount_type', 'value', 'start_date', 'end_date')}),
-        ('Ciblage (Inclusion)', {
+        ('General Information', {'fields': ('name', 'promo_type', 'code', 'active')}),
+        ('Value', {'fields': ('discount_type', 'value', 'start_date', 'end_date')}),
+        ('Targeting (Inclusion)', {
             'classes': ('collapse',),
             'fields': ('target_brands', 'target_categories', 'target_products')
         }),

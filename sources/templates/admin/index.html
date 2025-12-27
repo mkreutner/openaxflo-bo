@@ -1,0 +1,38 @@
+{% extends "admin/index.html" %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <div class="col-lg-4 col-6">
+            <div class="small-box bg-success">
+                <div class="inner">
+                    <h3>{{ stat_ca_month|floatformat:2 }} €</h3>
+                    <p>CA du mois en cours</p>
+                </div>
+                <div class="icon"><i class="fas fa-shopping-cart"></i></div>
+            </div>
+        </div>
+
+        <div class="col-lg-4 col-6">
+            <div class="small-box {% if stat_low_stock > 0 %}bg-danger{% else %}bg-info{% endif %}">
+                <div class="inner">
+                    <h3>{{ stat_low_stock }}</h3>
+                    <p>Alertes Stock Bas</p>
+                </div>
+                <div class="icon"><i class="fas fa-exclamation-triangle"></i></div>
+                <a href="/admin/inventory/product/?stock_quantity__lte=5" class="small-box-footer">Voir les produits <i class="fas fa-arrow-circle-right"></i></a>
+            </div>
+        </div>
+
+        <div class="col-lg-4 col-6">
+            <div class="small-box bg-warning">
+                <div class="inner">
+                    <h3>{{ stat_pending_orders }}</h3>
+                    <p>Commandes à valider</p>
+                </div>
+                <div class="icon"><i class="fas fa-clock"></i></div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

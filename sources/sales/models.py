@@ -3,7 +3,10 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 from decimal import Decimal
-from inventory.models import Product
+
+# -------------------------------------------------------------------
+# CLIENTS ET ADRESSES
+# -------------------------------------------------------------------
 
 class Customer(models.Model):
     first_name = models.CharField(max_length=100)
@@ -11,7 +14,14 @@ class Customer(models.Model):
     email = models.EmailField(unique=True)
     phone = models.CharField(max_length=20, blank=True)
     
+    # Champs B2B pour l'universalité
+    is_professional = models.BooleanField("Est une entreprise ?", default=False)
+    company_name = models.CharField("Nom de la société", max_length=200, blank=True, null=True)
+    vat_number = models.CharField("N° TVA Intracom.", max_length=50, blank=True, null=True)
+    
     def __str__(self):
+        if self.is_professional and self.company_name:
+            return f"{self.company_name} ({self.last_name})"
         return f"{self.first_name} {self.last_name}"
 
 class Address(models.Model):
@@ -20,46 +30,45 @@ class Address(models.Model):
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name='addresses')
     address_type = models.CharField(max_length=10, choices=ADDRESS_TYPES)
     label = models.CharField(max_length=100, help_text="Ex: Home, Office, My Studio")
-    full_address = models.TextField()
+    
+    street_address = models.CharField("Street and Number", max_length=255)
+    address_line_2 = models.CharField("Apartment, unit, etc.", max_length=255, blank=True, null=True)
     city = models.CharField(max_length=100)
     postal_code = models.CharField(max_length=20)
     country = models.CharField(max_length=100, default="France")
     is_default = models.BooleanField(default=False)
 
     def __str__(self):
-        return f"{self.label} ({self.city})"
+        return f"{self.label} - {self.street_address}, {self.city}"
+
+# -------------------------------------------------------------------
+# TRANSPORT ET LOGISTIQUE
+# -------------------------------------------------------------------
 
 class Carrier(models.Model):
     name = models.CharField(max_length=100)
-    base_cost = models.DecimalField(
-        max_digits=10, 
-        decimal_places=2, 
-        default=0.00,
-        help_text="Coût de livraison standard par défaut"
-    )
-    free_shipping_threshold = models.DecimalField(
-        max_digits=10, 
-        decimal_places=2, 
-        null=True, 
-        blank=True,
-        help_text="Montant de commande à partir duquel la livraison est gratuite"
-    )
+    base_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    free_shipping_threshold = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     is_relay_point_compatible = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.name} ({self.base_cost}€)"
 
+# -------------------------------------------------------------------
+# MARKETING ET FIDELITÉ
+# -------------------------------------------------------------------
+
 class Promotion(models.Model):
     PROMO_TYPES = [
         ('CODE', 'Promo Code (Coupon)'),
-        ('BRAND_OFFER', 'Brand Promotion (Cashback/Instant)'),
+        ('BRAND_OFFER', 'Brand Promotion'),
         ('STORE_WIDE', 'Store-wide Sale'),
     ]
     DISCOUNT_TYPES = [('PERCENT', '%'), ('FIXED', '€')]
 
     name = models.CharField(max_length=100)
     promo_type = models.CharField(max_length=20, choices=PROMO_TYPES)
-    code = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="Laisser vide pour offre automatique")
+    code = models.CharField(max_length=50, blank=True, null=True, unique=True)
     
     discount_type = models.CharField(max_length=10, choices=DISCOUNT_TYPES)
     value = models.DecimalField(max_digits=10, decimal_places=2)
@@ -68,12 +77,10 @@ class Promotion(models.Model):
     end_date = models.DateTimeField()
     active = models.BooleanField(default=True)
 
-    # --- CIBLAGE POSITIF (Où l'offre s'applique) ---
+    # Ciblage et Exclusions
     target_brands = models.ManyToManyField('inventory.Brand', blank=True)
     target_categories = models.ManyToManyField('inventory.Category', blank=True)
     target_products = models.ManyToManyField('inventory.Product', blank=True, related_name='included_in_promos')
-
-    # --- EXCLUSIONS (Où l'offre NE S'APPLIQUE PAS) ---
     excluded_categories = models.ManyToManyField('inventory.Category', blank=True, related_name='excluded_from_promos')
     excluded_products = models.ManyToManyField('inventory.Product', blank=True, related_name='excluded_from_promos')
 
@@ -82,31 +89,19 @@ class Promotion(models.Model):
         return self.active and self.start_date <= now <= self.end_date
     
     def is_applicable_to_product(self, product):
-        """Vérifie si un produit spécifique est éligible à cette promotion"""
-        if not self.is_valid():
-            return False
-
-        # 1. Vérifier les exclusions d'abord (Prioritaires)
-        if product in self.excluded_products.all():
-            return False
-        if product.category in self.excluded_categories.all():
-            return False
-
-        # 2. Si c'est une offre spécifique à des produits/marques/catégories
-        has_targets = self.target_products.exists() or self.target_brands.exists() or self.target_categories.exists()
+        if not self.is_valid(): return False
+        if product in self.excluded_products.all(): return False
+        if product.category in self.excluded_categories.all(): return False
         
+        has_targets = self.target_products.exists() or self.target_brands.exists() or self.target_categories.exists()
         if has_targets:
-            in_target_products = product in self.target_products.all()
-            in_target_brands = product.brand in self.target_brands.all()
-            in_target_categories = product.category in self.target_categories.all()
-            return in_target_products or in_target_brands or in_target_categories
-
-        # 3. Si aucun ciblage n'est défini, c'est une offre "Store-wide" (tout le magasin)
+            return (product in self.target_products.all() or 
+                    product.brand in self.target_brands.all() or 
+                    product.category in self.target_categories.all())
         return True
-    
+
 class CreditNote(models.Model):
-    """ Gestion des Avoirs clients """
-    customer = models.ForeignKey('Customer', on_delete=models.CASCADE)
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     code = models.CharField(max_length=20, unique=True)
     is_used = models.BooleanField(default=False)
@@ -116,8 +111,11 @@ class CreditNote(models.Model):
         return not self.is_used and self.expiry_date >= timezone.now().date()
 
     def __str__(self):
-        status = "UTILISÉ" if self.is_used else "VALIDE"
-        return f"Avoir {self.code} ({self.amount}€) - {status}"
+        return f"Avoir {self.code} ({self.amount}€)"
+
+# -------------------------------------------------------------------
+# COMMANDES ET LIGNES
+# -------------------------------------------------------------------
 
 class Order(models.Model):
     STATUS_CHOICES = [
@@ -129,23 +127,16 @@ class Order(models.Model):
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT)
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='DRAFT')
     
-    # Adresses
     billing_address = models.ForeignKey(Address, on_delete=models.PROTECT, related_name='billed_orders')
     shipping_address = models.ForeignKey(Address, on_delete=models.PROTECT, related_name='shipped_orders', null=True, blank=True)
     
-    # Transport
     carrier = models.ForeignKey(Carrier, on_delete=models.PROTECT, null=True)
     is_relay_point = models.BooleanField(default=False)
-    relay_point_id = models.CharField(max_length=50, blank=True, help_text="ID of the selected relay point")
+    relay_point_id = models.CharField(max_length=50, blank=True)
     tracking_number = models.CharField(max_length=100, blank=True)
     
-    shipping_cost = models.DecimalField(
-        max_digits=10, 
-        decimal_places=2, 
-        default=0.00,
-        validators=[MinValueValidator(Decimal('0.00'))]
-    )
-    shipping_cost_incl_tax = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    shipping_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    shipping_tax_rate = models.ForeignKey('company.TaxRate', on_delete=models.PROTECT, null=True)
 
     applied_promotion = models.ForeignKey(Promotion, on_delete=models.SET_NULL, null=True, blank=True)
     applied_credit_note = models.OneToOneField(CreditNote, on_delete=models.SET_NULL, null=True, blank=True)
@@ -153,48 +144,30 @@ class Order(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
     
-    # Nouveau champ calculé en Django 5 pour le total des produits
-    # (Note : Nécessite une logique de calcul via une méthode ou un signal car les lignes sont liées)
-    
     def calculate_discount(self):
-        discount = 0
+        discount = Decimal('0.00')
         total_products = sum(line.total_line_incl_tax for line in self.lines.all())
-        
-        # 1. Calcul de la promotion
         if self.applied_promotion and self.applied_promotion.is_valid():
             if self.applied_promotion.discount_type == 'PERCENT':
                 discount += (total_products * self.applied_promotion.value / 100)
             else:
                 discount += self.applied_promotion.value
-                
-        # 2. Ajout de l'avoir
         if self.applied_credit_note and not self.applied_credit_note.is_used:
             discount += self.applied_credit_note.amount
-            
         return discount
     
     def calculate_automatic_discounts(self):
-        """Parcourt les lignes et applique les remises automatiques (Marques/Offres)"""
-        total_discount = 0
-        # On récupère toutes les promos actives sans code (automatiques)
-        auto_promos = Promotion.objects.filter(
-            active=True, 
-            code__isnull=True, 
-            start_date__lte=timezone.now(), 
-            end_date__gte=timezone.now()
-        )
-
+        total_discount = Decimal('0.00')
+        auto_promos = Promotion.objects.filter(active=True, code__isnull=True, 
+                                             start_date__lte=timezone.now(), end_date__gte=timezone.now())
         for line in self.lines.all():
             for promo in auto_promos:
                 if promo.is_applicable_to_product(line.product):
                     if promo.discount_type == 'PERCENT':
                         total_discount += (line.total_line_incl_tax * promo.value / 100)
                     else:
-                        # Si fixe, on l'applique une fois par unité
                         total_discount += (promo.value * line.quantity)
-                    
-                    break # On n'applique qu'une seule promo automatique par ligne
-        
+                    break
         return total_discount
 
     def calculate_shipping(self):
@@ -202,80 +175,54 @@ class Order(models.Model):
         if not self.carrier:
             return Decimal('0.00')
         
-        # Calcul du total des produits (HT ou TTC selon ton choix)
-        order_total = sum(line.total_line_price for line in self.lines.all())
+        # Correction ici : on utilise total_line_incl_tax au lieu de total_line_price
+        order_total_ttc = sum(line.total_line_incl_tax for line in self.lines.all())
         
         # Vérification du seuil de gratuité
-        if self.carrier.free_shipping_threshold and order_total >= self.carrier.free_shipping_threshold:
+        if self.carrier.free_shipping_threshold and order_total_ttc >= self.carrier.free_shipping_threshold:
             return Decimal('0.00')
         
         return self.carrier.base_cost
 
     def clean(self):
-        """
-        Validation personnalisée de la commande.
-        """
         super().clean()
-
-        # 1. Vérification de l'adresse de livraison
-        if self.shipping_address:
-            if self.shipping_address.address_type != 'SHIPPING':
-                raise ValidationError({
-                    'shipping_address': "L'adresse sélectionnée pour la livraison doit être de type 'SHIPPING'."
-                })
-            
-            # Optionnel : Vérifier que l'adresse appartient bien au client de la commande
-            if self.shipping_address.customer != self.customer:
-                raise ValidationError({
-                    'shipping_address': "Cette adresse de livraison n'appartient pas au client sélectionné."
-                })
-
-        # 2. Vérification de l'adresse de facturation
-        if self.billing_address:
-            if self.billing_address.address_type != 'BILLING':
-                raise ValidationError({
-                    'billing_address': "L'adresse sélectionnée pour la facturation doit être de type 'BILLING'."
-                })
-            
-            if self.billing_address.customer != self.customer:
-                raise ValidationError({
-                    'billing_address': "Cette adresse de facturation n'appartient pas au client sélectionné."
-                })
+        if self.shipping_address and (self.shipping_address.address_type != 'SHIPPING' or self.shipping_address.customer != self.customer):
+            raise ValidationError({'shipping_address': "Adresse de livraison invalide."})
+        if self.billing_address and (self.billing_address.address_type != 'BILLING' or self.billing_address.customer != self.customer):
+            raise ValidationError({'billing_address': "Adresse de facturation invalide."})
 
     def get_totals(self):
         lines = self.lines.all()
         total_ht = sum(line.total_line_excl_tax for line in lines)
         total_ttc_products = sum(line.total_line_incl_tax for line in lines)
         
-        # On considère que les frais de port ont aussi une TVA à 20%
-        shipping_ht = self.shipping_cost_incl_tax / Decimal('1.20')
+        tax_rate_val = self.shipping_tax_rate.rate if self.shipping_tax_rate else Decimal('20.00')
+        shipping_ttc = self.shipping_cost * (1 + tax_rate_val / 100)
         
-        grand_total_ttc = total_ttc_products + self.shipping_cost_incl_tax
-        total_vat = grand_total_ttc - (total_ht + shipping_ht)
+        grand_total_ttc = total_ttc_products + shipping_ttc - self.discount_amount
+        total_vat = grand_total_ttc - (total_ht + self.shipping_cost)
         
         return {
-            'total_ht': total_ht + shipping_ht,
-            'total_vat': total_vat,
-            'grand_total_ttc': grand_total_ttc
+            'total_ht': (total_ht + self.shipping_cost).quantize(Decimal('0.01')),
+            'total_vat': total_vat.quantize(Decimal('0.01')),
+            'grand_total_ttc': grand_total_ttc.quantize(Decimal('0.01'))
         }
 
     def save(self, *args, **kwargs):
-        # On force l'exécution de clean() car save() ne l'appelle pas automatiquement 
-        # en dehors de l'interface Admin ou des ModelForms.
+        if not self.reference:
+            last_order = Order.objects.all().last()
+            new_id = (last_order.id + 1) if last_order else 1
+            self.reference = f"DP-{timezone.now().year}-{new_id:04d}"
         self.full_clean()
         super().save(*args, **kwargs)
 
-    def __str__(self):
-        return self.reference
-
 class OrderLine(models.Model):
-    order = models.ForeignKey('Order', related_name='lines', on_delete=models.CASCADE)
+    order = models.ForeignKey(Order, related_name='lines', on_delete=models.CASCADE)
     product = models.ForeignKey('inventory.Product', on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField(default=1)
     
-    # On stocke les valeurs au moment de la transaction
     unit_price_incl_tax = models.DecimalField(max_digits=10, decimal_places=2)
-    vat_rate = models.DecimalField(max_digits=5, decimal_places=2, default=20.00)
+    vat_rate = models.DecimalField("Taux TVA (%)", max_digits=5, decimal_places=2)
 
     @property
     def total_line_excl_tax(self):
@@ -287,23 +234,19 @@ class OrderLine(models.Model):
         return self.unit_price_incl_tax * self.quantity
 
     @property
-    def vat_amount(self):
-        return self.total_line_incl_tax - self.total_line_excl_tax
-    
+    def total_line_price(self):
+        """Alias de confort pour pointer vers le TTC par défaut"""
+        return self.total_line_incl_tax
+
     def clean(self):
         super().clean()
-        # On vérifie si le stock est suffisant
         if self.product and self.quantity > self.product.stock_quantity:
-            raise ValidationError({
-                'quantity': f"Stock insuffisant pour {self.product.name}. "
-                            f"Disponible : {self.product.stock_quantity}."
-            })
+            raise ValidationError({'quantity': f"Stock insuffisant ({self.product.stock_quantity})."})
 
     def save(self, *args, **kwargs):
         if not self.unit_price_incl_tax:
             self.unit_price_incl_tax = self.product.retail_price_incl_tax
         if not self.vat_rate:
-            self.vat_rate = self.product.vat_rate
-        self.full_clean() # Force la vérification du stock
+            self.vat_rate = self.product.tax_rate.rate
+        self.full_clean()
         super().save(*args, **kwargs)
-

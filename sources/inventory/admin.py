@@ -3,7 +3,7 @@ from django.contrib import admin
 # Register your models here.
 from .models import Category, Brand, Product
 # On importe l'Inline depuis l'autre application
-from procurement.admin import PurchasePriceInline
+from procurement.admin import SupplierPriceInline
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
@@ -22,4 +22,4 @@ class ProductAdmin(admin.ModelAdmin):
     list_filter = ('category', 'brand')
     search_fields = ('name',)
     # On insère l'Inline ici
-    inlines = [PurchasePriceInline]
+    inlines = [SupplierPriceInline]
