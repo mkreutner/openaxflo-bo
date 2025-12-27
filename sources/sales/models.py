@@ -1,6 +1,7 @@
 from django.db import models
-from django.core.validators import MinValueValidator
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 from decimal import Decimal
 from inventory.models import Product
 
@@ -48,6 +49,76 @@ class Carrier(models.Model):
     def __str__(self):
         return f"{self.name} ({self.base_cost}€)"
 
+class Promotion(models.Model):
+    PROMO_TYPES = [
+        ('CODE', 'Promo Code (Coupon)'),
+        ('BRAND_OFFER', 'Brand Promotion (Cashback/Instant)'),
+        ('STORE_WIDE', 'Store-wide Sale'),
+    ]
+    DISCOUNT_TYPES = [('PERCENT', '%'), ('FIXED', '€')]
+
+    name = models.CharField(max_length=100)
+    promo_type = models.CharField(max_length=20, choices=PROMO_TYPES)
+    code = models.CharField(max_length=50, blank=True, null=True, unique=True, help_text="Laisser vide pour offre automatique")
+    
+    discount_type = models.CharField(max_length=10, choices=DISCOUNT_TYPES)
+    value = models.DecimalField(max_digits=10, decimal_places=2)
+    
+    start_date = models.DateTimeField()
+    end_date = models.DateTimeField()
+    active = models.BooleanField(default=True)
+
+    # --- CIBLAGE POSITIF (Où l'offre s'applique) ---
+    target_brands = models.ManyToManyField('inventory.Brand', blank=True)
+    target_categories = models.ManyToManyField('inventory.Category', blank=True)
+    target_products = models.ManyToManyField('inventory.Product', blank=True, related_name='included_in_promos')
+
+    # --- EXCLUSIONS (Où l'offre NE S'APPLIQUE PAS) ---
+    excluded_categories = models.ManyToManyField('inventory.Category', blank=True, related_name='excluded_from_promos')
+    excluded_products = models.ManyToManyField('inventory.Product', blank=True, related_name='excluded_from_promos')
+
+    def is_valid(self):
+        now = timezone.now()
+        return self.active and self.start_date <= now <= self.end_date
+    
+    def is_applicable_to_product(self, product):
+        """Vérifie si un produit spécifique est éligible à cette promotion"""
+        if not self.is_valid():
+            return False
+
+        # 1. Vérifier les exclusions d'abord (Prioritaires)
+        if product in self.excluded_products.all():
+            return False
+        if product.category in self.excluded_categories.all():
+            return False
+
+        # 2. Si c'est une offre spécifique à des produits/marques/catégories
+        has_targets = self.target_products.exists() or self.target_brands.exists() or self.target_categories.exists()
+        
+        if has_targets:
+            in_target_products = product in self.target_products.all()
+            in_target_brands = product.brand in self.target_brands.all()
+            in_target_categories = product.category in self.target_categories.all()
+            return in_target_products or in_target_brands or in_target_categories
+
+        # 3. Si aucun ciblage n'est défini, c'est une offre "Store-wide" (tout le magasin)
+        return True
+    
+class CreditNote(models.Model):
+    """ Gestion des Avoirs clients """
+    customer = models.ForeignKey('Customer', on_delete=models.CASCADE)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    code = models.CharField(max_length=20, unique=True)
+    is_used = models.BooleanField(default=False)
+    expiry_date = models.DateField()
+
+    def is_valid(self):
+        return not self.is_used and self.expiry_date >= timezone.now().date()
+
+    def __str__(self):
+        status = "UTILISÉ" if self.is_used else "VALIDE"
+        return f"Avoir {self.code} ({self.amount}€) - {status}"
+
 class Order(models.Model):
     STATUS_CHOICES = [
         ('DRAFT', 'Draft'), ('PAID', 'Paid'), ('SHIPPED', 'Shipped'),
@@ -76,11 +147,56 @@ class Order(models.Model):
     )
     shipping_cost_incl_tax = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
 
+    applied_promotion = models.ForeignKey(Promotion, on_delete=models.SET_NULL, null=True, blank=True)
+    applied_credit_note = models.OneToOneField(CreditNote, on_delete=models.SET_NULL, null=True, blank=True)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
     created_at = models.DateTimeField(auto_now_add=True)
     
     # Nouveau champ calculé en Django 5 pour le total des produits
     # (Note : Nécessite une logique de calcul via une méthode ou un signal car les lignes sont liées)
     
+    def calculate_discount(self):
+        discount = 0
+        total_products = sum(line.total_line_incl_tax for line in self.lines.all())
+        
+        # 1. Calcul de la promotion
+        if self.applied_promotion and self.applied_promotion.is_valid():
+            if self.applied_promotion.discount_type == 'PERCENT':
+                discount += (total_products * self.applied_promotion.value / 100)
+            else:
+                discount += self.applied_promotion.value
+                
+        # 2. Ajout de l'avoir
+        if self.applied_credit_note and not self.applied_credit_note.is_used:
+            discount += self.applied_credit_note.amount
+            
+        return discount
+    
+    def calculate_automatic_discounts(self):
+        """Parcourt les lignes et applique les remises automatiques (Marques/Offres)"""
+        total_discount = 0
+        # On récupère toutes les promos actives sans code (automatiques)
+        auto_promos = Promotion.objects.filter(
+            active=True, 
+            code__isnull=True, 
+            start_date__lte=timezone.now(), 
+            end_date__gte=timezone.now()
+        )
+
+        for line in self.lines.all():
+            for promo in auto_promos:
+                if promo.is_applicable_to_product(line.product):
+                    if promo.discount_type == 'PERCENT':
+                        total_discount += (line.total_line_incl_tax * promo.value / 100)
+                    else:
+                        # Si fixe, on l'applique une fois par unité
+                        total_discount += (promo.value * line.quantity)
+                    
+                    break # On n'applique qu'une seule promo automatique par ligne
+        
+        return total_discount
+
     def calculate_shipping(self):
         """Logique de calcul du coût de transport"""
         if not self.carrier:
@@ -190,3 +306,4 @@ class OrderLine(models.Model):
             self.vat_rate = self.product.vat_rate
         self.full_clean() # Force la vérification du stock
         super().save(*args, **kwargs)
+

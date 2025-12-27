@@ -17,3 +17,13 @@ class PurchasePrice(models.Model):
 
     class Meta:
         unique_together = ('product', 'supplier')
+
+class SupplierOffer(models.Model):
+    supplier = models.ForeignKey('Supplier', on_delete=models.CASCADE)
+    description = models.CharField(max_length=200)
+    discount_percent = models.DecimalField(max_digits=5, decimal_places=2)
+    valid_from = models.DateField()
+    valid_until = models.DateField()
+    
+    # Utile pour que l'ERP te dise quand acheter
+    minimum_order_quantity = models.PositiveIntegerField(default=1)
